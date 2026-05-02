@@ -1,0 +1,49 @@
+## Quick how-to: ICA second-pass pruning scan
+
+This pipeline is meant for checking whether an already compressed or baseline LLM still contains extra pruneable structure in its activations.
+
+Recommended first run:
+
+```python
+APPLY_MASK = False
+EXTRA_SPARSITY = 0.05
+N_COMPONENTS = 32
+PROTECTION_QUANTILE = 0.85
+TARGET_MODULES = ["v_proj", "fc1", "fc2"]
+```
+
+Start with `APPLY_MASK = False` to generate only the diagnostic outputs:
+
+```text
+module_scores/
+proposed_masks/
+summary.csv
+```
+
+After checking `summary.csv`, switch to:
+
+```python
+APPLY_MASK = True
+SAVE_PRUNED_MODEL = True
+```
+
+This applies the proposed masks and should create:
+
+```text
+pruned_model/
+```
+
+The most important knob is `EXTRA_SPARSITY`:
+`0.02` is conservative, `0.05` is a good first test, `0.10` is more aggressive.
+
+`N_COMPONENTS` controls how many ICA activation components are extracted per module. Start with `32`; use `16` if FastICA becomes unstable, and try `64` only when you have enough calibration tokens.
+
+`PROTECTION_QUANTILE = 0.85` is a reasonable middle ground. Higher values make the protection stricter; lower values make the scan more permissive.
+
+The goal is simple: use ICA to build a weight-level protection map, then prune the lowest-scoring weights first. This is not meant to replace SparseGPT or Wanda, but to act as a lightweight second-pass diagnostic after standard pruning methods.
+
+Coming next: adaptive component selection with Shannon entropy.
+
+Instead of manually choosing `N_COMPONENTS = 16 / 32 / 64`, the next version will estimate an effective component count per layer:
+
+This should make the scan more layer-aware: simpler modules get fewer ICA components, while more complex activation spaces get more.
