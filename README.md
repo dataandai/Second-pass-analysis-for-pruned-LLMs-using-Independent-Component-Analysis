@@ -38,10 +38,53 @@ The proposed scan is:
 \text{activation samples}
 \rightarrow
 \text{ICA components}
+
+## 3. Mathematical formulation
+\mathbb{R}^{n \times d_{\mathrm{out}}}
+# ICA-Based Second-Pass Pruning Scan for LLMs
+
+> GitHub rendering note: displayed equations use fenced `math` blocks rather than dollar-delimited display math. This is the most reliable format for README rendering on GitHub.
+
+
+This repository/notebook implements a minimal research prototype for scanning a pretrained or already-pruned causal language model for **additional pruning opportunities** using **Independent Component Analysis (ICA)** on layer activations.
+
+The method is intentionally simple:
+
+- no SAE,
+- no sparse autoencoder,
+- no LoRA,
+- no fine-tuning,
+- no dashboard,
+- no claim that the discovered components are human-interpretable concepts.
+
+The goal is practical compression diagnostics: identify weight regions that appear weakly connected to statistically salient activation components and may therefore be candidates for a second pruning pass.
+
+---
+
+## 1. Hypothesis
+
+A model that has already been compressed by magnitude pruning, SVD/low-rank pruning, Wanda, or SparseGPT may still contain residual redundancy. The remaining redundancy may not be visible as simply:
+
+- small individual weights,
+- low-energy singular directions,
+- low local activation magnitude,
+- or layer-output reconstruction error.
+
+The hypothesis is:
+
+> Layer activations may still contain statistically separable source-like components. If these components are estimated with ICA, they can be projected back into the corresponding weight matrix to build a **weight-level protection map**. Weights that are small and weakly connected to protected ICA directions are plausible candidates for additional pruning.
+
+The proposed scan is:
+
+
+```math
+	ext{activation samples}
 \rightarrow
-\text{weight protection map}
+	ext{ICA components}
 \rightarrow
-\text{extra pruning mask proposal}
+	ext{weight protection map}
+\rightarrow
+	ext{extra pruning mask proposal}
 ```
 
 
@@ -101,7 +144,7 @@ p^{\mathrm{in}}_j
 =
 \sum_{k=1}^{K}
 \alpha^{\mathrm{in}}_k
-\left|c^{\mathrm{in}}_{k,j}\right|
+\left|a^{\mathrm{in}}_{k,j}\right|
 ```
 
 
@@ -109,7 +152,7 @@ where:
 
 - $K$ is the number of ICA components,
 - $\alpha^{\mathrm{in}}_k$ is the estimated importance of input-side component $k$,
-- $c^{\mathrm{in}}_{k,j}$ is the loading of input dimension $j$ on input-side component $k$.
+- $a^{\mathrm{in}}_{k,j}$ is entry $j$ of the **mixing direction** of component $k$ in the original input space (i.e., `ica.mixing_.T @ pca.components_` row $k$, entry $j$).
 
 Then a Wanda-like ICA score is:
 
@@ -129,11 +172,11 @@ SparseGPT formulates pruning as a layer-wise reconstruction problem. For a linea
 
 
 ```math
-y = Wx
+
 ```
 
 
-it seeks a sparse approximation $\widehat{W}$ such that:
+
 
 
 ```math
@@ -157,17 +200,17 @@ The intended role is therefore:
 
 
 ```math
-\text{SparseGPT/Wanda}
+	ext{SparseGPT/Wanda}
 =
-\text{primary pruning engine}
+	ext{primary pruning engine}
 ```
 
 
 
 ```math
-\text{ICA scan}
+	ext{ICA scan}
 =
-\text{second-pass residual redundancy detector}
+	ext{second-pass residual redundancy detector}
 ```
 
 
@@ -179,7 +222,7 @@ Consider a target linear module:
 
 
 ```math
-y = Wx
+where:
 ```
 
 
@@ -195,49 +238,6 @@ W \in \mathbb{R}^{d_{\mathrm{out}} \times d_{\mathrm{in}}}
 ```math
 x \in \mathbb{R}^{d_{\mathrm{in}}}
 ```
-
-
-
-```math
-y \in \mathbb{R}^{d_{\mathrm{out}}}
-```
-
-
-During calibration, we collect token-level input activation samples:
-
-
-```math
-X_{\mathrm{in}}
-\in
-\mathbb{R}^{n \times d_{\mathrm{in}}}
-```
-
-
-and optionally output activation samples:
-
-
-```math
-X_{\mathrm{out}}
-\in
-\mathbb{R}^{n \times d_{\mathrm{out}}}
-```
-
-
-where $n$ is the number of sampled token vectors.
-
-### 3.1 ICA decomposition
-
-ICA assumes that observed activations are mixtures of statistically independent latent sources.
-
-A common matrix form is:
-
-
-```math
-X \approx SA^\top
-```
-
-
-where:
 
 - $X$ is the observed activation matrix,
 - $S$ is the estimated source activation matrix,
