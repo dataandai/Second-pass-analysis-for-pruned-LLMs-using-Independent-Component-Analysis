@@ -1,346 +1,328 @@
 # ICA-Based Second-Pass Pruning Scan for LLMs
 
-> GitHub rendering note: displayed equations use fenced `math` blocks rather than dollar-delimited display math. This is the most reliable format for README rendering on GitHub.
+**A minimal diagnostic prototype for testing whether ICA-derived activation structure can provide a useful second-pass pruning signal after standard LLM compression methods.**
 
+This repository explores a simple engineering question:
 
-This repository/notebook implements a minimal research prototype for scanning a pretrained or already-pruned causal language model for **additional pruning opportunities** using **Independent Component Analysis (ICA)** on layer activations.
+> After a model has already been pruned by a method such as magnitude pruning, Wanda, SparseGPT, or low-rank/SVD pruning, can Independent Component Analysis (ICA) on layer activations help identify a small additional set of weights that are relatively safe to prune?
 
-The method is intentionally simple:
+The goal is not to replace existing pruning engines.
 
-- no SAE,
-- no sparse autoencoder,
-- no LoRA,
-- no fine-tuning,
-- no dashboard,
-- no claim that the discovered components are human-interpretable concepts.
-
-The goal is practical compression diagnostics: identify weight regions that appear weakly connected to statistically salient activation components and may therefore be candidates for a second pruning pass.
+The goal is to test whether ICA can provide a useful **protection prior** or **extra mask proposal** for second-pass compression.
 
 ---
 
-## 1. Hypothesis
+## Status
 
-A model that has already been compressed by magnitude pruning, SVD/low-rank pruning, Wanda, or SparseGPT may still contain residual redundancy. The remaining redundancy may not be visible as simply:
+**Status:** minimal research prototype
 
-- small individual weights,
-- low-energy singular directions,
-- low local activation magnitude,
-- or layer-output reconstruction error.
+**Primary use:** exploratory pruning diagnostics
 
-The hypothesis is:
+**Core idea:** use ICA on calibration activations to build per-channel protection scores, project those scores back to weights, and propose a small additional pruning mask over already-surviving weights.
 
-> Layer activations may still contain statistically separable source-like components. If these components are estimated with ICA, they can be projected back into the corresponding weight matrix to build a **weight-level protection map**. Weights that are small and weakly connected to protected ICA directions are plausible candidates for additional pruning.
+This repository is intentionally small and practical:
 
-The proposed scan is:
+- no sparse autoencoder
+- no LoRA
+- no fine-tuning requirement
+- no interpretability dashboard
+- no claim that ICA components are human-readable concepts
+- no claim that ICA is better than Wanda or SparseGPT
 
+The prototype should be judged by evaluation, not by how sophisticated the decomposition sounds.
+
+---
+
+## What this is
+
+This repository is a **second-pass pruning scan**.
+
+It assumes that a model may already have been compressed by one of the following:
+
+- magnitude pruning
+- SVD / low-rank pruning
+- Wanda
+- SparseGPT
+- another one-shot pruning method
+
+Those methods remove the obvious redundancy according to their own criteria.
+
+The ICA scan asks a follow-up question:
+
+> Among the weights that survived the first pruning pass, are there still weights that are small and weakly connected to statistically separable activation structure?
+
+If yes, those weights become candidates for an additional pruning mask.
+
+---
+
+## What this is not
+
+This repository does **not** claim that:
+
+- ICA components are circuits
+- ICA components are human-interpretable concepts
+- mean ICA source activation is causal importance
+- the proposed mask is guaranteed to improve compression
+- unstructured extra sparsity will automatically improve inference speed
+- ICA replaces Wanda, SparseGPT, or reconstruction-based pruning
+
+The scan is a diagnostic layer.
+
+Its output is a pruning proposal that must be evaluated against baselines.
+
+---
+
+## One-sentence summary
+
+The method collects calibration activations, fits ICA components, converts component participation into input/output protection scores, and proposes extra pruning only where weight magnitude and ICA protection are both low.
 
 ```math
-\text{activation samples}
+\text{calibration activations}
 \rightarrow
 \text{ICA components}
-
-## 3. Mathematical formulation
-\mathbb{R}^{n \times d_{\mathrm{out}}}
-# ICA-Based Second-Pass Pruning Scan for LLMs
-
-> GitHub rendering note: displayed equations use fenced `math` blocks rather than dollar-delimited display math. This is the most reliable format for README rendering on GitHub.
-
-
-This repository/notebook implements a minimal research prototype for scanning a pretrained or already-pruned causal language model for **additional pruning opportunities** using **Independent Component Analysis (ICA)** on layer activations.
-
-The method is intentionally simple:
-
-- no SAE,
-- no sparse autoencoder,
-- no LoRA,
-- no fine-tuning,
-- no dashboard,
-- no claim that the discovered components are human-interpretable concepts.
-
-The goal is practical compression diagnostics: identify weight regions that appear weakly connected to statistically salient activation components and may therefore be candidates for a second pruning pass.
-
----
-
-## 1. Hypothesis
-
-A model that has already been compressed by magnitude pruning, SVD/low-rank pruning, Wanda, or SparseGPT may still contain residual redundancy. The remaining redundancy may not be visible as simply:
-
-- small individual weights,
-- low-energy singular directions,
-- low local activation magnitude,
-- or layer-output reconstruction error.
-
-The hypothesis is:
-
-> Layer activations may still contain statistically separable source-like components. If these components are estimated with ICA, they can be projected back into the corresponding weight matrix to build a **weight-level protection map**. Weights that are small and weakly connected to protected ICA directions are plausible candidates for additional pruning.
-
-The proposed scan is:
-
-
-```math
-	ext{activation samples}
 \rightarrow
-	ext{ICA components}
+\text{channel protection scores}
 \rightarrow
-	ext{weight protection map}
+\text{weight scores}
 \rightarrow
-	ext{extra pruning mask proposal}
+\text{extra pruning mask proposal}
 ```
 
-
-This is best understood as a **second-pass scan**, not as a replacement for existing pruning engines.
-
-A central design choice is to use ICA rather than an orthogonal basis search. Orthogonal methods such as PCA/SVD restrict the basis vectors to be mutually perpendicular. ICA imposes a stricter and different condition: it looks for components whose activations are as statistically independent as possible. In practice, this means ICA is not satisfied with directions that merely explain variance; it tries to separate activation sources that have distinct non-Gaussian usage patterns.
-
-What we gain from this stricter condition is a more selective protection signal. If a direction is preserved by ICA, it is not only large in energy, but also carries separable activation structure. For second-pass pruning, this can help avoid pruning weights that support rare or mixed activation sources that may be invisible to magnitude, SVD, Wanda-style activation norms, or local reconstruction alone.
-
 ---
 
-## 2. Why use this after SparseGPT or Wanda?
+## Why use this after Wanda or SparseGPT?
 
-### 2.1 Wanda
+### Wanda
 
-Wanda, short for *Pruning by Weights and Activations*, removes weights using a local score based on weight magnitude and input activation magnitude.
+Wanda scores weights using weight magnitude and input activation magnitude.
 
-For a linear layer with weight matrix:
-
+For a linear layer:
 
 ```math
 W \in \mathbb{R}^{d_{\mathrm{out}} \times d_{\mathrm{in}}}
 ```
 
-
-Wanda uses a score of the form:
-
+a Wanda-style score is:
 
 ```math
-\mathrm{WandaScore}_{ij}
-=
-|W_{ij}| \cdot \|X_j\|_2
+\mathrm{WandaScore}_{ij} = |W_{ij}| \cdot \|X_j\|_2
 ```
 
+where \(X_j\) is the collected activation vector for input channel \(j\).
 
-where:
+This is simple, efficient, and effective.
 
-- $W_{ij}$ is the weight connecting input dimension $j$ to output dimension $i$,
-- $X_j$ is the collected activation vector for input channel $j$,
-- $\|X_j\|_2$ is the magnitude of that input activation channel across calibration samples.
+However, it is still a local magnitude-and-activation-norm criterion.
 
-Weights with the smallest scores are pruned, typically on a per-output basis.
+The ICA scan asks a different question:
 
-This is efficient and effective because it uses only a forward pass and does not require retraining or weight updates. However, it is still local: it asks which weights look small after scaling by input activation strength.
+> Does this channel participate in statistically separable activation components, or does it mostly support weakly protected structure?
 
-A second-pass ICA scan asks a different question:
+The scan keeps the spirit of a cheap local score, but replaces or supplements raw channel norm with ICA-derived protection.
 
-> Does this input channel participate in statistically salient activation components, or does it mostly support weak / redundant components?
+---
 
-Instead of using only a raw activation norm, ICA estimates component-level protection:
+### SparseGPT
 
+SparseGPT treats pruning as a layer-wise reconstruction problem.
+
+For a linear module:
 
 ```math
-\mathrm{input\_protection}_j
-=
-p^{\mathrm{in}}_j
-=
-\sum_{k=1}^{K}
-\alpha^{\mathrm{in}}_k
-\left|a^{\mathrm{in}}_{k,j}\right|
+y = Wx
 ```
 
-
-where:
-
-- $K$ is the number of ICA components,
-- $\alpha^{\mathrm{in}}_k$ is the estimated importance of input-side component $k$,
-- $a^{\mathrm{in}}_{k,j}$ is entry $j$ of the **mixing direction** of component $k$ in the original input space (i.e., `ica.mixing_.T @ pca.components_` row $k$, entry $j$).
-
-Then a Wanda-like ICA score is:
-
-
-```math
-\mathrm{ICAScore}_{ij}
-=
-|W_{ij}| \cdot p^{\mathrm{in}}_j
-```
-
-
-This preserves the spirit of Wanda but replaces the scalar input-channel norm with an ICA-derived protection score.
-
-### 2.2 SparseGPT
-
-SparseGPT formulates pruning as a layer-wise reconstruction problem. For a linear module:
-
-
-```math
-
-```
-
-
-
-
+it seeks a sparse approximation:
 
 ```math
 WX \approx \widehat{W}X
 ```
 
+SparseGPT is much stronger than pure magnitude pruning because it uses approximate second-order information and weight compensation to preserve local layer outputs.
 
-SparseGPT uses approximate second-order information to prune and compensate weights while preserving the local layer output.
+The ICA scan is not a replacement for that.
 
-This is much stronger than pure magnitude pruning, but it remains primarily a **layer-local output preservation** objective. It does not explicitly ask whether the preserved output directions correspond to statistically separable activation sources, nor does it explicitly identify which weight regions support those directions.
-
-An ICA scan can be used after SparseGPT as a diagnostic layer:
-
-1. run the already-pruned model on calibration data,
-2. collect the surviving activations,
-3. estimate ICA components,
-4. project component protection back to weights,
-5. propose a small extra pruning mask only where the ICA protection score is low.
-
-The intended role is therefore:
-
+A better way to think about the relationship is:
 
 ```math
-	ext{SparseGPT/Wanda}
-=
-	ext{primary pruning engine}
+\text{SparseGPT / Wanda} = \text{primary pruning engine}
 ```
-
-
 
 ```math
-	ext{ICA scan}
-=
-	ext{second-pass residual redundancy detector}
+\text{ICA scan} = \text{second-pass diagnostic or protection prior}
 ```
 
+The ICA scan can be run after a primary pruning method to inspect the surviving activations and propose a small extra mask.
 
 ---
 
-## 3. Mathematical formulation
+## Hypothesis
+
+A model that has already been pruned may still contain residual redundancy that is not fully captured by:
+
+- small individual weights
+- low singular value directions
+- low input activation magnitude
+- local layer-output reconstruction loss
+
+The working hypothesis is:
+
+> If surviving layer activations contain statistically separable source-like structure, then the weights supporting those structures may deserve protection. Conversely, small surviving weights that are weakly connected to protected ICA directions may be plausible candidates for a second pruning pass.
+
+This is a hypothesis to test, not a conclusion.
+
+---
+
+## Method overview
+
+For each target linear module:
+
+1. collect calibration activations,
+2. optionally reduce dimensionality with PCA for numerical stability,
+3. run FastICA,
+4. estimate component activity,
+5. convert component loadings into input and/or output channel protection,
+6. compute a weight-level pruning score,
+7. propose a small extra pruning mask over currently nonzero weights.
+
+The proposed mask should then be evaluated against random and magnitude-based extra pruning at the same additional sparsity level.
+
+---
+
+## Mathematical formulation
 
 Consider a target linear module:
 
-
 ```math
-where:
+y = Wx
 ```
 
-
 with:
-
 
 ```math
 W \in \mathbb{R}^{d_{\mathrm{out}} \times d_{\mathrm{in}}}
 ```
 
-
-
 ```math
 x \in \mathbb{R}^{d_{\mathrm{in}}}
 ```
 
-- $X$ is the observed activation matrix,
-- $S$ is the estimated source activation matrix,
-- $A$ is a mixing matrix.
-
-Equivalently, depending on notation, one may write:
-
-
 ```math
-X \approx AS
+y \in \mathbb{R}^{d_{\mathrm{out}}}
 ```
 
-
-In implementation, `sklearn.decomposition.FastICA` returns estimated sources and component vectors. For this prototype, the exact philosophical interpretation of the source components is not important. They are used only as statistically separated activation directions.
-
-Let the input-side ICA component $k$ be:
-
+During calibration, collect token-level input activation samples:
 
 ```math
-c^{\mathrm{in}}_k
-\in
-\mathbb{R}^{d_{\mathrm{in}}}
+X_{\mathrm{in}} \in \mathbb{R}^{n \times d_{\mathrm{in}}}
 ```
 
-
-and the output-side ICA component $k$ be:
-
+and optionally output activation samples:
 
 ```math
-c^{\mathrm{out}}_k
-\in
-\mathbb{R}^{d_{\mathrm{out}}}
+X_{\mathrm{out}} \in \mathbb{R}^{n \times d_{\mathrm{out}}}
 ```
 
+where \(n\) is the number of sampled token vectors.
 
-### 3.2 Component importance
+---
 
-The simplest component importance proxy is mean absolute source activation:
+## ICA decomposition
 
+ICA assumes that observed activations are mixtures of statistically independent latent sources.
+
+A common form is:
 
 ```math
-\alpha_k
-=
-\mathbb{E}_{t}
-\left[
-\left|S_{t,k}\right|
-\right]
+X \approx SA^\top
 ```
-
 
 where:
 
-- $S_{t,k}$ is the estimated source activation of component $k$ for token/sample $t$,
-- $\alpha_k$ is a cheap, non-causal importance proxy.
+- \(X\) is the observed activation matrix,
+- \(S\) is the estimated source activation matrix,
+- \(A\) is the mixing matrix.
 
-This is not a causal importance measure. Later versions can replace it with ablation-based loss sensitivity:
+In implementation, `sklearn.decomposition.FastICA` returns estimated sources and component/mixing directions. For this prototype, the philosophical interpretation of the sources is not the point. They are used only as statistically separated activation directions.
 
+Let an input-side ICA direction be:
 
 ```math
-\alpha_k
-=
-\Delta \mathcal{L}_k
+c^{\mathrm{in}}_k \in \mathbb{R}^{d_{\mathrm{in}}}
 ```
 
-
-where $\Delta \mathcal{L}_k$ is the loss increase after suppressing component $k$.
-
-### 3.3 Input-side protection
-
-Input feature/channel protection is defined as:
-
+and an output-side ICA direction be:
 
 ```math
-p^{\mathrm{in}}_j
-=
+c^{\mathrm{out}}_k \in \mathbb{R}^{d_{\mathrm{out}}}
+```
+
+---
+
+## Component importance
+
+The simplest component importance proxy is mean absolute source activation:
+
+```math
+\alpha_k = \mathbb{E}_t \left[ |S_{t,k}| \right]
+```
+
+where:
+
+- \(S_{t,k}\) is the source activation of component \(k\) for token/sample \(t\),
+- \(\alpha_k\) is a cheap non-causal importance proxy.
+
+This is not causal importance.
+
+A stronger later version should replace or validate it with component ablation:
+
+```math
+\alpha_k = \Delta \mathcal{L}_k
+```
+
+where \(\Delta \mathcal{L}_k\) is the loss increase after suppressing component \(k\).
+
+---
+
+## Input-side protection
+
+Input channel protection is defined as:
+
+```math
+p^{\mathrm{in}}_j =
 \sum_{k=1}^{K}
 \alpha^{\mathrm{in}}_k
 \left|c^{\mathrm{in}}_{k,j}\right|
 ```
 
+Interpretation:
 
-Interpretation: input dimension $j$ is protected if it participates strongly in high-importance input-side ICA components.
+> Input dimension \(j\) is more protected if it participates strongly in high-activity ICA directions.
 
-### 3.4 Output-side protection
+This is not proof that the channel is important. It is only a diagnostic protection score.
+
+---
+
+## Output-side protection
 
 If output activations are also analyzed, define:
 
-
 ```math
-p^{\mathrm{out}}_i
-=
+p^{\mathrm{out}}_i =
 \sum_{k=1}^{K}
 \alpha^{\mathrm{out}}_k
 \left|c^{\mathrm{out}}_{k,i}\right|
 ```
 
+Interpretation:
 
-Interpretation: output dimension $i$ is protected if it participates strongly in high-importance output-side ICA components.
+> Output dimension \(i\) is more protected if it participates strongly in high-activity output-side ICA directions.
 
-### 3.5 Weight-level score
+---
+
+## Weight-level score
 
 The input-only score is:
-
 
 ```math
 \mathrm{score}_{ij}
@@ -348,9 +330,7 @@ The input-only score is:
 |W_{ij}| \cdot p^{\mathrm{in}}_j
 ```
 
-
 The input-output score is:
-
 
 ```math
 \mathrm{score}_{ij}
@@ -358,38 +338,38 @@ The input-output score is:
 |W_{ij}| \cdot p^{\mathrm{out}}_i \cdot p^{\mathrm{in}}_j
 ```
 
-
-Low score means that:
+Low score means:
 
 1. the weight magnitude is small, and
-2. the input/output dimensions it connects are weakly protected by ICA components.
+2. the input/output dimensions connected by the weight are weakly protected by ICA-derived scores.
 
 Those weights are proposed as additional pruning candidates.
 
+Existing zeros are ignored. The scan only proposes additional pruning among weights that survived the first pruning pass.
+
 ---
 
-## 4. Why ICA is stricter than an orthogonal basis search
+## ICA versus PCA/SVD
 
-SVD and PCA search for orthogonal directions. For a weight matrix, SVD gives:
+PCA and SVD look for orthogonal directions that explain variance or energy.
 
-
-```math
-W = U \Sigma V^\top
-```
-
-
-where the columns of $U$ and $V$ are orthonormal. Low-rank pruning keeps the top singular directions:
-
+For a weight matrix:
 
 ```math
-W_r = U_r \Sigma_r V_r^\top
+W = U\Sigma V^\top
 ```
 
+low-rank pruning keeps the leading singular directions:
 
-This is an energy-preserving criterion: keep the orthogonal directions that explain the largest amount of squared mass. It is useful when the remaining redundancy is genuinely low-rank.
+```math
+W_r = U_r\Sigma_rV_r^\top
+```
 
-ICA asks for a stricter kind of separation. Instead of only requiring directions to be orthogonal, ICA estimates latent sources $S_1, \ldots, S_K$ such that their joint distribution factorizes as much as possible:
+This is useful when redundancy is well described by low-rank structure.
 
+ICA uses a different and stronger assumption.
+
+Instead of only requiring uncorrelated or orthogonal directions, ICA tries to find components whose source activations are as statistically independent as possible:
 
 ```math
 p(S_1, \ldots, S_K)
@@ -397,41 +377,31 @@ p(S_1, \ldots, S_K)
 \prod_{k=1}^{K} p(S_k)
 ```
 
+A practical objective is related to reducing statistical dependence among components, often approximated in FastICA by whitening followed by maximizing non-Gaussianity.
 
-Equivalently, ICA tries to reduce statistical dependence among components. One way to express the objective is to minimize mutual information:
+The point is not that ICA is automatically better than PCA/SVD.
 
-
-```math
-I(S_1, \ldots, S_K)
-=
-\sum_{k=1}^{K} H(S_k)
--
-H(S_1, \ldots, S_K)
-```
-
-
-where $H$ denotes entropy.
-
-Practical FastICA implementations approximate this by maximizing non-Gaussianity after whitening. Whitening may make the coordinates uncorrelated, but ICA then rotates the whitened space to find components that are more independent, not merely orthogonal.
-
-The distinction can be summarized as:
-
-| Method | Constraint | What it prefers | What it may miss |
-|---|---|---|---|
-| PCA/SVD | orthogonality | high-energy directions | low-energy but structured sources |
-| Wanda-style scoring | magnitude × activation norm | locally strong channels | mixed source structure |
-| SparseGPT | local output reconstruction | weights needed to preserve local layer output | source-level separability |
-| ICA scan | approximate statistical independence | separable non-Gaussian activation sources | causal importance unless ablation is added |
-
-The gain from this stricter condition is not philosophical interpretability. The gain is a potentially better second-pass pruning signal. If a component is statistically separable, then the weights supporting it may deserve protection even when their raw magnitude, singular energy, or channel activation norm is modest. Conversely, weights that are small and weakly connected to independent activation sources are stronger pruning candidates.
-
-This is why ICA is useful after SVD, Wanda, or SparseGPT: those methods already remove obvious redundancy. ICA then asks whether the surviving activations still contain source-like structure that can be mapped back to weights.
+The point is that ICA may expose a different kind of activation structure: separable non-Gaussian usage patterns that are not necessarily the highest-energy orthogonal directions.
 
 ---
 
-## 5. Practical pipeline
+## Method comparison
 
-The notebook implements the following steps.
+| Method | Main signal | What it prefers | What it may miss |
+|---|---|---|---|
+| Magnitude pruning | weight size | small individual weights | activation-dependent importance |
+| PCA/SVD | orthogonal energy directions | high-energy low-rank structure | low-energy but structured activation sources |
+| Wanda | weight magnitude × input activation norm | locally strong activated channels | mixed or source-like activation structure |
+| SparseGPT | local output reconstruction | weights needed to preserve layer outputs | explicit source-level protection |
+| ICA scan | approximate statistical independence in activations | separable non-Gaussian activation directions | causal importance unless ablation is added |
+
+The ICA scan is most useful if it improves second-pass pruning decisions beyond simple random or magnitude-based extra pruning.
+
+---
+
+## Practical pipeline
+
+The notebook implements the following workflow.
 
 ### Step 1: Load model
 
@@ -440,52 +410,68 @@ Uses:
 - `transformers.AutoModelForCausalLM`
 - `transformers.AutoTokenizer`
 
-The model is placed in `eval()` mode. No fine-tuning is performed.
+The model is placed in `eval()` mode.
+
+No fine-tuning is required for the scan.
 
 ### Step 2: Load calibration text
 
 Supported inputs:
 
-- Hugging Face dataset, such as `wikitext`
-- plain text file, one line per sample
+- a Hugging Face dataset such as `wikitext`,
+- a plain text file with one sample per line.
 
-The text is tokenized to fixed sequence length.
+Text is tokenized to a fixed sequence length.
 
 ### Step 3: Find target linear modules
 
 The scan targets `torch.nn.Linear` modules with names such as:
 
-- `q_proj`, `k_proj`, `v_proj`, `o_proj`
-- `gate_proj`, `up_proj`, `down_proj`
-- `fc1`, `fc2`, `c_fc`, `c_proj`
+- `q_proj`
+- `k_proj`
+- `v_proj`
+- `o_proj`
+- `gate_proj`
+- `up_proj`
+- `down_proj`
+- `fc1`
+- `fc2`
+- `c_fc`
+- `c_proj`
 
 Embedding layers and `lm_head` are skipped by default.
 
 ### Step 4: Collect activations
 
-Forward hooks collect input and output activations for each target module. To keep memory bounded, token vectors are subsampled and stored on CPU as `float32`.
+Forward hooks collect input and output activations for each target module.
+
+To keep memory bounded:
+
+- token vectors are subsampled,
+- tensors are moved to CPU,
+- activations are stored as `float32`.
 
 ### Step 5: Run ICA
 
 For each module:
 
 1. center activations,
-2. optionally reduce dimension using PCA for numerical stabilization,
+2. optionally apply PCA preprocessing for numerical stability,
 3. run `FastICA`,
 4. compute source activation magnitudes,
 5. compute component protection vectors.
 
-PCA here is only a numerical preprocessing step before ICA. It is not used as the pruning criterion.
+PCA here is only a preprocessing step before ICA. It is not the pruning criterion.
 
 ### Step 6: Score weights
 
-For each target module, compute a score matrix with the same shape as the weight matrix.
+For each target module, compute a score matrix with the same shape as the module weight matrix.
 
-Low-scoring nonzero weights are selected as proposed extra pruning candidates.
+Low-scoring currently nonzero weights are selected as proposed extra pruning candidates.
 
 ### Step 7: Save outputs
 
-The output directory contains:
+The output directory may contain:
 
 - `config.json`
 - `summary.csv`
@@ -495,9 +481,9 @@ The output directory contains:
 
 ---
 
-## 6. Usage
+## Usage
 
-Example:
+Example command-line usage:
 
 ```bash
 python run_ica_prune_scan.py \
@@ -514,24 +500,24 @@ In the Colab notebook, edit the `ScanConfig` cell instead of passing command-lin
 
 ---
 
-## 7. Outputs and interpretation
+## Outputs
 
 ### `summary.csv`
 
-Each row corresponds to one scanned linear module and includes:
+Each row corresponds to one scanned linear module and includes fields such as:
 
-- module name,
-- weight shape,
-- current sparsity,
-- proposed extra sparsity,
-- estimated total sparsity after applying the mask,
-- score mean and standard deviation,
-- number of proposed new zeros.
+- module name
+- weight shape
+- current sparsity
+- proposed extra sparsity
+- estimated total sparsity after applying the mask
+- score mean
+- score standard deviation
+- number of proposed new zeros
 
-### Score matrix
+### Score matrices
 
-For module weight matrix $W$, the score matrix has the same shape:
-
+For module weight matrix \(W\), the score matrix has the same shape:
 
 ```math
 \mathrm{score}
@@ -539,22 +525,23 @@ For module weight matrix $W$, the score matrix has the same shape:
 \mathbb{R}^{d_{\mathrm{out}} \times d_{\mathrm{in}}}
 ```
 
+Lower score means more prunable under the ICA-derived criterion.
 
-Low score means more prunable under the ICA-based criterion.
+### Masks
 
-### Mask
+Each proposed mask is a Boolean tensor with the same shape as the corresponding weight matrix.
 
-The mask is a Boolean tensor with the same shape as the weight matrix. `True` entries indicate weights proposed for zeroing.
+`True` entries indicate weights proposed for zeroing.
 
-Existing zeros are ignored when selecting new pruning candidates. The `extra_sparsity` parameter applies only to weights that are currently nonzero.
+The `extra_sparsity` parameter applies only to weights that are currently nonzero.
 
 ---
 
-## 8. Evaluation protocol
+## Evaluation protocol
 
 A minimal evaluation should compare:
 
-1. original model,
+1. original dense model,
 2. already-pruned model,
 3. already-pruned model plus random extra pruning,
 4. already-pruned model plus magnitude extra pruning,
@@ -565,10 +552,9 @@ At equal additional sparsity, measure:
 - perplexity,
 - downstream task accuracy,
 - latency or memory impact if the sparsity pattern is hardware-supported,
-- recovery after short fine-tuning, if allowed.
+- recovery after short fine-tuning, if fine-tuning is allowed.
 
-The key claim to test is:
-
+The first key claim to test is:
 
 ```math
 \Delta \mathrm{PPL}_{\mathrm{ICA}}
@@ -576,11 +562,9 @@ The key claim to test is:
 \Delta \mathrm{PPL}_{\mathrm{magnitude}}
 ```
 
-
 at the same extra sparsity level.
 
 A stronger claim would be:
-
 
 ```math
 \mathrm{Sparsity}_{\mathrm{ICA}}(\epsilon)
@@ -588,71 +572,124 @@ A stronger claim would be:
 \mathrm{Sparsity}_{\mathrm{baseline}}(\epsilon)
 ```
 
-
-where $\epsilon$ is a fixed acceptable perplexity degradation threshold.
-
----
-
-## 9. Limitations
-
-This method is deliberately modest. It has several limitations:
-
-1. **ICA components are not causal by default.**  
-   Mean source activation is only a proxy. Component ablation would be a stronger importance measure.
-
-2. **The score is local.**  
-   It is computed per linear module and does not explicitly optimize the full model loss.
-
-3. **Residual-stream interactions are indirect.**  
-   The method sees them through calibration activations but does not model cross-layer circuits explicitly.
-
-4. **FastICA can be unstable in high dimensions.**  
-   The notebook uses PCA preprocessing for numerical stability, but this introduces a hyperparameter.
-
-5. **Unstructured sparsity may not accelerate inference.**  
-   To obtain real speedups, the mask may need to be converted into structured or semi-structured sparsity patterns.
-
-6. **It is not a replacement for Wanda or SparseGPT.**  
-   It is designed as a second-pass diagnostic or constraint generator.
+where \(\epsilon\) is a fixed acceptable perplexity degradation threshold.
 
 ---
 
-## 10. Possible extensions
+## Recommended results table
 
-The prototype can be extended without changing the core idea:
+Before making strong claims, report something like:
 
-- replace activation-energy component importance with component ablation loss,
-- compare input-only vs input-output scoring,
+| Model | First-pass pruning | Base sparsity | Extra sparsity | Random ΔPPL | Magnitude ΔPPL | ICA ΔPPL |
+|---|---:|---:|---:|---:|---:|---:|
+| OPT-125M | Wanda | 50% | +2% | TBD | TBD | TBD |
+| OPT-125M | SparseGPT | 50% | +2% | TBD | TBD | TBD |
+| OPT-350M | Wanda | 50% | +2% | TBD | TBD | TBD |
+
+The method is only interesting if ICA-guided extra pruning is consistently less damaging than simple baselines at the same extra sparsity.
+
+---
+
+## Interpretation discipline
+
+Use cautious wording.
+
+| Avoid saying | Prefer saying |
+|---|---|
+| ICA finds circuits | ICA estimates statistically separated activation directions |
+| ICA discovers concepts | ICA produces activation components under independence assumptions |
+| protected weights are important | protected weights are less attractive pruning candidates under this score |
+| ICA is better than Wanda | ICA-guided extra pruning performed better than the baseline in this experiment |
+| component importance | component activity proxy |
+| second-pass pruning method | second-pass pruning diagnostic or mask proposal |
+
+This keeps the project honest and easier to evaluate.
+
+---
+
+## Limitations
+
+### ICA components are not causal by default
+
+Mean absolute source activation is only a proxy. Component ablation or loss sensitivity would be a stronger importance measure.
+
+### The score is local
+
+The score is computed per linear module. It does not directly optimize full-model loss.
+
+### Residual-stream interactions are indirect
+
+The method observes residual effects through calibration activations, but it does not explicitly model cross-layer circuits.
+
+### FastICA can be unstable in high dimensions
+
+PCA preprocessing improves numerical stability but introduces additional hyperparameters.
+
+Recommended robustness checks:
+
+- multiple random seeds,
+- different calibration subsets,
+- different numbers of ICA components,
+- with and without output-side protection,
+- comparison against random and magnitude baselines.
+
+### Unstructured sparsity may not speed up inference
+
+Extra unstructured zeros may reduce parameter count but not wall-clock latency.
+
+For actual speedups, the mask may need to be converted into hardware-supported sparsity patterns such as 2:4 or block sparsity.
+
+### This is not a replacement for Wanda or SparseGPT
+
+The intended role is second-pass scanning, diagnostics, or protection-prior generation.
+
+---
+
+## Possible extensions
+
+The prototype can be extended in several directions:
+
+- replace mean activation importance with component ablation loss,
+- compare input-only and input-output scoring,
 - add per-output pruning budgets similar to Wanda,
-- constrain the mask to 2:4 or 4:8 semi-structured sparsity,
-- use the ICA score as a protection penalty inside a SparseGPT-like reconstruction objective,
-- evaluate layer groups separately: attention projections vs MLP projections,
-- add a small recovery fine-tuning phase after mask application.
+- constrain masks to 2:4 or 4:8 semi-structured sparsity,
+- use ICA scores as a protection penalty inside a SparseGPT-like objective,
+- evaluate attention projections and MLP projections separately,
+- add short recovery fine-tuning after mask application,
+- add multi-seed and multi-calibration robustness reports.
 
-A SparseGPT-like constrained objective could be:
+---
 
+## ICA as a SparseGPT protection prior
+
+A stronger version of the idea is not to let ICA choose the pruning mask directly.
+
+Instead, ICA can provide a penalty inside a SparseGPT-like reconstruction objective:
 
 ```math
 \min_{\widehat{W}}
-\left\|WX - \widehat{W}X\right\|_F^2
+\left\|
+WX - \widehat{W}X
+\right\|_F^2
 +
 \lambda
 \sum_{i,j}
-M_{ij} \cdot P_{ij}
+M_{ij} P_{ij}
 ```
-
 
 where:
 
-- $M_{ij}=1$ if weight $(i,j)$ is removed,
-- $P_{ij}$ is the ICA protection score,
-- $\lambda$ controls how strongly protected weights are discouraged from being removed.
+- \(M_{ij}=1\) if weight \((i,j)\) is removed,
+- \(P_{ij}\) is the ICA-derived protection score,
+- \(\lambda\) controls how strongly protected weights are discouraged from being removed.
 
-This would keep SparseGPT as the pruning engine while using ICA as a protection prior.
+This keeps reconstruction as the primary objective while using ICA as a protection prior.
+
+That is likely a more robust long-term direction than direct score-thresholding alone.
 
 ---
 
-## 11. References
+## References and related work
 
 - Frantar, E. and Alistarh, D. **SparseGPT: Massive Language Models Can Be Accurately Pruned in One-Shot.** arXiv:2301.00774, 2023.
 - Sun, M., Liu, Z., Bair, A., and Kolter, J. Z. **A Simple and Effective Pruning Approach for Large Language Models.** arXiv:2306.11695, 2023.
@@ -660,6 +697,14 @@ This would keep SparseGPT as the pruning engine while using ICA as a protection 
 
 ---
 
-## 12. Scope statement
+## Scope statement
 
-This project is about **practical LLM compression diagnostics**. It does not attempt to prove that ICA components are human-readable concepts. It only tests whether statistically separated activation components provide a useful extra signal for second-pass pruning after standard compression methods have already been applied.
+This project is about practical LLM compression diagnostics.
+
+It does not attempt to prove that ICA components are human-readable concepts or causal mechanisms.
+
+It tests a narrower engineering hypothesis:
+
+> ICA-derived activation structure may provide a useful extra protection signal for second-pass pruning after standard compression methods have already removed the obvious redundancy.
+
+The repository is useful if it makes that hypothesis easy to test, reproduce, and falsify.
